@@ -47,11 +47,33 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 st.markdown('<div class="main-title">📸 Video Screenshot Extractor</div>', unsafe_allow_html=True)
-st.markdown('<div class="sub-title">Online link paste karein ya video upload karein — 1 second me screenshots tayar!</div>', unsafe_allow_html=True)
+st.markdown('<div class="sub-title">Fixed 1-Second Interval ya Auto Scene/Frame Change Detection se Screenshots lein!</div>', unsafe_allow_html=True)
 
 # Settings Sidebar
-st.sidebar.header("⚙️ Settings")
-interval_sec = st.sidebar.number_input("Screenshot Interval (Seconds)", min_value=0.1, max_value=60.0, value=1.0, step=0.5, help="Default is 1.0 second")
+st.sidebar.header("⚙️ Extraction Settings")
+
+extraction_mode = st.sidebar.radio(
+    "Select Extraction Mode",
+    ["⏱️ Fixed Time Interval (e.g. Every 1 Sec)", "🎬 Auto Scene / Frame Change Detection"]
+)
+
+if "Fixed Time" in extraction_mode:
+    interval_sec = st.sidebar.number_input("Screenshot Interval (Seconds)", min_value=0.1, max_value=60.0, value=1.0, step=0.5, help="Default is 1.0 second")
+    sensitivity_threshold = 20.0
+else:
+    interval_sec = 0.5 # Minimum gap check for scene change
+    sensitivity = st.sidebar.select_slider(
+        "Scene Change Sensitivity",
+        options=["Low (Major Cuts)", "Medium (Standard)", "High (Subtle Slide Changes)"],
+        value="Medium (Standard)"
+    )
+    if "Low" in sensitivity:
+        sensitivity_threshold = 35.0
+    elif "High" in sensitivity:
+        sensitivity_threshold = 12.0
+    else:
+        sensitivity_threshold = 20.0
+
 max_frames = st.sidebar.number_input("Max Screenshots Limit", min_value=5, max_value=500, value=100, step=10, help="Standard memory limit for cloud")
 image_format = st.sidebar.selectbox("Image Format", ["JPG", "PNG"])
 
@@ -65,11 +87,8 @@ def slugify(text):
     if not text:
         return "video"
     text = text.lower()
-    # Replace spaces with hyphens
     text = re.sub(r'\s+', '-', text)
-    # Remove special characters (keep only a-z, 0-9, and -)
     text = re.sub(r'[^a-z0-9\-]', '', text)
-    # Remove multiple hyphens
     text = re.sub(r'\-+', '-', text).strip('-')
     return text if text else "video"
 
@@ -81,7 +100,7 @@ def format_timestamp(seconds):
         return f"{mins:02d}m_{secs:02d}s"
     return f"{secs:02d}s_{millis:03d}ms" if millis > 0 else f"{secs:02d}s"
 
-def extract_frames(video_path, interval, max_limit):
+def extract_frames_fixed_interval(video_path, interval, max_limit):
     cap = cv2.VideoCapture(video_path)
     if not cap.isOpened():
         st.error("❌ Video open nahi ho pa rahi hai. Kripya file ya link dobara check karein.")
@@ -89,12 +108,10 @@ def extract_frames(video_path, interval, max_limit):
 
     fps = cap.get(cv2.CAP_PROP_FPS)
     total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
-    
     if fps <= 0 or not fps:
-        fps = 30.0 # Default fallback
+        fps = 30.0
 
     frame_step = max(1, int(fps * interval))
-    
     extracted = []
     current_frame = 0
     
@@ -111,7 +128,6 @@ def extract_frames(video_path, interval, max_limit):
         timestamp_sec = current_frame / fps
         time_label = format_timestamp(timestamp_sec)
         
-        # Convert BGR (OpenCV) to RGB (PIL/Streamlit)
         frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
         pil_img = Image.fromarray(frame_rgb)
         
@@ -124,17 +140,87 @@ def extract_frames(video_path, interval, max_limit):
         count += 1
         current_frame += frame_step
         
-        # Progress calculation
         progress_val = min(1.0, current_frame / total_frames) if total_frames > 0 else 0.5
         progress_bar.progress(progress_val)
-        status_text.text(f"Processing... Screenshot #{count} extracted at {time_label}")
+        status_text.text(f"Extracting... Screenshot #{count} at {time_label}")
         
     cap.release()
     progress_bar.empty()
     status_text.empty()
     return extracted
 
-# Tab layout (Default Link Tab first as requested)
+def extract_frames_scene_change(video_path, threshold_percent, max_limit):
+    cap = cv2.VideoCapture(video_path)
+    if not cap.isOpened():
+        st.error("❌ Video open nahi ho pa rahi hai.")
+        return []
+
+    fps = cap.get(cv2.CAP_PROP_FPS)
+    total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+    if fps <= 0 or not fps:
+        fps = 30.0
+
+    # Sample video every ~0.2 seconds for scene change detection
+    sample_step = max(1, int(fps * 0.2))
+    min_capture_gap = int(fps * 0.8) # Min 0.8s gap between detected scene changes
+    
+    extracted = []
+    prev_gray_small = None
+    last_captured_frame = -min_capture_gap
+    current_frame = 0
+    
+    progress_bar = st.progress(0)
+    status_text = st.empty()
+    
+    count = 0
+    while cap.isOpened() and count < max_limit:
+        cap.set(cv2.CAP_PROP_POS_FRAMES, current_frame)
+        ret, frame = cap.read()
+        if not ret:
+            break
+            
+        # Convert to small gray image for fast diff check
+        gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+        gray_small = cv2.resize(gray, (160, 90))
+        
+        timestamp_sec = current_frame / fps
+        time_label = format_timestamp(timestamp_sec)
+        
+        is_new_scene = False
+        if prev_gray_small is None:
+            is_new_scene = True # Always capture 1st frame
+        else:
+            # Absolute difference
+            diff = cv2.absdiff(prev_gray_small, gray_small)
+            diff_percent = (diff.mean() / 255.0) * 100.0
+            
+            if diff_percent >= threshold_percent and (current_frame - last_captured_frame) >= min_capture_gap:
+                is_new_scene = True
+
+        if is_new_scene:
+            frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+            pil_img = Image.fromarray(frame_rgb)
+            extracted.append({
+                "image": pil_img,
+                "timestamp": time_label,
+                "seconds": timestamp_sec
+            })
+            count += 1
+            last_captured_frame = current_frame
+            prev_gray_small = gray_small
+
+        current_frame += sample_step
+        
+        progress_val = min(1.0, current_frame / total_frames) if total_frames > 0 else 0.5
+        progress_bar.progress(progress_val)
+        status_text.text(f"Auto Detecting Scene Changes... Found {count} scenes (Time: {time_label})")
+        
+    cap.release()
+    progress_bar.empty()
+    status_text.empty()
+    return extracted
+
+# Tab layout
 tab1, tab2 = st.tabs(["🔗 Online Video Link (YouTube / URL)", "📁 Upload Video File"])
 
 video_file_path = None
@@ -175,7 +261,6 @@ with tab2:
         with open(temp_file_path, "wb") as f:
             f.write(uploaded_file.getbuffer())
         video_file_path = temp_file_path
-        # Clean title from file name
         base_name = os.path.splitext(uploaded_file.name)[0]
         st.session_state['video_title'] = slugify(base_name)
         st.session_state['raw_title'] = base_name
@@ -186,11 +271,14 @@ if video_file_path:
     video_title_slug = st.session_state.get('video_title', 'video')
     display_title = st.session_state.get('raw_title', 'video')
     st.subheader(f"⚡ Ready: {display_title}")
-    st.info(f"🏷️ File Name Slug Prefix: `{video_title_slug}`")
+    st.info(f"📌 Mode: **{extraction_mode}** | 🏷️ File Slug: `{video_title_slug}`")
     
     if st.button("🚀 Extract Screenshots Now", key="process_btn"):
-        with st.spinner("Screenshots extract ho rahe hain..."):
-            frames = extract_frames(video_file_path, interval_sec, max_frames)
+        with st.spinner("Processing video..."):
+            if "Fixed Time" in extraction_mode:
+                frames = extract_frames_fixed_interval(video_file_path, interval_sec, max_frames)
+            else:
+                frames = extract_frames_scene_change(video_file_path, sensitivity_threshold, max_frames)
             st.session_state['frames'] = frames
 
 # Display Extracted Screenshots
@@ -200,7 +288,7 @@ if 'frames' in st.session_state and st.session_state['frames']:
     
     st.success(f"✅ Kul {len(frames)} Screenshots Extract Ho Gaye!")
     
-    # ZIP File Generator with Clean Title Slug
+    # ZIP File Generator
     zip_buffer = io.BytesIO()
     fmt = "JPEG" if image_format == "JPG" else "PNG"
     ext = "jpg" if image_format == "JPG" else "png"
@@ -222,7 +310,6 @@ if 'frames' in st.session_state and st.session_state['frames']:
     st.markdown("---")
     st.subheader("🖼️ Screenshots Preview")
     
-    # Grid of screenshots (using use_container_width=True to avoid Streamlit TypeError)
     cols_per_row = 4
     for i in range(0, len(frames), cols_per_row):
         cols = st.columns(cols_per_row)
