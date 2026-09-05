@@ -4,6 +4,7 @@ import tempfile
 import os
 import zipfile
 import io
+import re
 from PIL import Image
 import yt_dlp
 
@@ -46,13 +47,31 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 st.markdown('<div class="main-title">📸 Video Screenshot Extractor</div>', unsafe_allow_html=True)
-st.markdown('<div class="sub-title">Video upload karein ya online link daalein — 1 second me screenshots tayar!</div>', unsafe_allow_html=True)
+st.markdown('<div class="sub-title">Online link paste karein ya video upload karein — 1 second me screenshots tayar!</div>', unsafe_allow_html=True)
 
 # Settings Sidebar
 st.sidebar.header("⚙️ Settings")
 interval_sec = st.sidebar.number_input("Screenshot Interval (Seconds)", min_value=0.1, max_value=60.0, value=1.0, step=0.5, help="Default is 1.0 second")
 max_frames = st.sidebar.number_input("Max Screenshots Limit", min_value=5, max_value=500, value=100, step=10, help="Standard memory limit for cloud")
 image_format = st.sidebar.selectbox("Image Format", ["JPG", "PNG"])
+
+def slugify(text):
+    """
+    Title ko clean format me convert karta hai:
+    - Smallcase (lowercase)
+    - Space ki jagah '-'
+    - Special characters remove
+    """
+    if not text:
+        return "video"
+    text = text.lower()
+    # Replace spaces with hyphens
+    text = re.sub(r'\s+', '-', text)
+    # Remove special characters (keep only a-z, 0-9, and -)
+    text = re.sub(r'[^a-z0-9\-]', '', text)
+    # Remove multiple hyphens
+    text = re.sub(r'\-+', '-', text).strip('-')
+    return text if text else "video"
 
 def format_timestamp(seconds):
     mins = int(seconds // 60)
@@ -115,25 +134,16 @@ def extract_frames(video_path, interval, max_limit):
     status_text.empty()
     return extracted
 
-# Tab layout
-tab1, tab2 = st.tabs(["📁 Upload Video File", "🔗 Online Video Link (YouTube / URL)"])
+# Tab layout (Default Link Tab first as requested)
+tab1, tab2 = st.tabs(["🔗 Online Video Link (YouTube / URL)", "📁 Upload Video File"])
 
 video_file_path = None
 
 with tab1:
-    uploaded_file = st.file_uploader("Video File Select Karein", type=["mp4", "mov", "avi", "mkv", "webm"])
-    if uploaded_file is not None:
-        temp_dir = tempfile.mkdtemp()
-        temp_file_path = os.path.join(temp_dir, uploaded_file.name)
-        with open(temp_file_path, "wb") as f:
-            f.write(uploaded_file.getbuffer())
-        video_file_path = temp_file_path
-
-with tab2:
     online_url = st.text_input("Online Video Link Paste Karein (YouTube, Direct MP4 URL, etc.)")
     if online_url:
         if st.button("🔗 Load Video Link"):
-            with st.spinner("Video stream fetch ho raha hai... Please wait..."):
+            with st.spinner("Video stream & title fetch ho raha hai... Please wait..."):
                 try:
                     ydl_opts = {
                         'format': 'best[ext=mp4]/best',
@@ -143,10 +153,12 @@ with tab2:
                     with yt_dlp.YoutubeDL(ydl_opts) as ydl:
                         info = ydl.extract_info(online_url, download=False)
                         video_url = info.get('url', None)
+                        raw_title = info.get('title', 'online-video')
                         if video_url:
                             st.session_state['online_video_path'] = video_url
-                            st.session_state['video_title'] = info.get('title', 'Online Video')
-                            st.success(f"✅ Video stream loaded: {info.get('title', 'Online Video')}")
+                            st.session_state['video_title'] = slugify(raw_title)
+                            st.session_state['raw_title'] = raw_title
+                            st.success(f"✅ Video Loaded: **{raw_title}**")
                         else:
                             st.error("❌ Is link se video extract nahi ho payi.")
                 except Exception as e:
@@ -155,10 +167,26 @@ with tab2:
     if 'online_video_path' in st.session_state and not video_file_path:
         video_file_path = st.session_state['online_video_path']
 
+with tab2:
+    uploaded_file = st.file_uploader("Video File Select Karein", type=["mp4", "mov", "avi", "mkv", "webm"])
+    if uploaded_file is not None:
+        temp_dir = tempfile.mkdtemp()
+        temp_file_path = os.path.join(temp_dir, uploaded_file.name)
+        with open(temp_file_path, "wb") as f:
+            f.write(uploaded_file.getbuffer())
+        video_file_path = temp_file_path
+        # Clean title from file name
+        base_name = os.path.splitext(uploaded_file.name)[0]
+        st.session_state['video_title'] = slugify(base_name)
+        st.session_state['raw_title'] = base_name
+
 # Processing Trigger
 if video_file_path:
     st.markdown("---")
-    st.subheader("⚡ Ready to Process")
+    video_title_slug = st.session_state.get('video_title', 'video')
+    display_title = st.session_state.get('raw_title', 'video')
+    st.subheader(f"⚡ Ready: {display_title}")
+    st.info(f"🏷️ File Name Slug Prefix: `{video_title_slug}`")
     
     if st.button("🚀 Extract Screenshots Now", key="process_btn"):
         with st.spinner("Screenshots extract ho rahe hain..."):
@@ -168,30 +196,33 @@ if video_file_path:
 # Display Extracted Screenshots
 if 'frames' in st.session_state and st.session_state['frames']:
     frames = st.session_state['frames']
+    video_title_slug = st.session_state.get('video_title', 'video')
+    
     st.success(f"✅ Kul {len(frames)} Screenshots Extract Ho Gaye!")
     
-    # ZIP File Generator
+    # ZIP File Generator with Clean Title Slug
     zip_buffer = io.BytesIO()
+    fmt = "JPEG" if image_format == "JPG" else "PNG"
+    ext = "jpg" if image_format == "JPG" else "png"
+    
     with zipfile.ZipFile(zip_buffer, "a", zipfile.ZIP_DEFLATED, False) as zip_file:
         for idx, item in enumerate(frames):
             img_byte_arr = io.BytesIO()
-            fmt = "JPEG" if image_format == "JPG" else "PNG"
-            ext = "jpg" if image_format == "JPG" else "png"
             item['image'].save(img_byte_arr, format=fmt)
-            filename = f"screenshot_{idx+1:03d}_{item['timestamp']}.{ext}"
+            filename = f"{video_title_slug}_{item['timestamp']}.{ext}"
             zip_file.writestr(filename, img_byte_arr.getvalue())
             
     st.download_button(
-        label="📦 Download All Screenshots (ZIP File)",
+        label=f"📦 Download All Screenshots (ZIP: {video_title_slug}_screenshots.zip)",
         data=zip_buffer.getvalue(),
-        file_name="video_screenshots.zip",
+        file_name=f"{video_title_slug}_screenshots.zip",
         mime="application/zip"
     )
     
     st.markdown("---")
     st.subheader("🖼️ Screenshots Preview")
     
-    # Grid of screenshots
+    # Grid of screenshots (using use_container_width=True to avoid Streamlit TypeError)
     cols_per_row = 4
     for i in range(0, len(frames), cols_per_row):
         cols = st.columns(cols_per_row)
@@ -199,15 +230,14 @@ if 'frames' in st.session_state and st.session_state['frames']:
             if i + j < len(frames):
                 item = frames[i + j]
                 with cols[j]:
-                    st.image(item['image'], caption=f"Time: {item['timestamp']}", use_column_width=True)
+                    st.image(item['image'], caption=f"Time: {item['timestamp']}", use_container_width=True)
                     img_byte_arr = io.BytesIO()
-                    fmt = "JPEG" if image_format == "JPG" else "PNG"
-                    ext = "jpg" if image_format == "JPG" else "png"
                     item['image'].save(img_byte_arr, format=fmt)
+                    single_filename = f"{video_title_slug}_{item['timestamp']}.{ext}"
                     st.download_button(
-                        label=f"⬇️ Download {item['timestamp']}",
+                        label=f"⬇️ {item['timestamp']}",
                         data=img_byte_arr.getvalue(),
-                        file_name=f"frame_{item['timestamp']}.{ext}",
+                        file_name=single_filename,
                         mime=f"image/{ext}",
                         key=f"dl_{i+j}"
                     )
