@@ -3,3 +3,4 @@ opencv-python-headless
 pillow
 yt-dlp
 numpy
+faster-whisper
