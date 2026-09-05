@@ -6,26 +6,21 @@ import zipfile
 import io
 import re
 import glob
+import urllib.request
+import json
 from PIL import Image
 import yt_dlp
 
 # Page Config
 st.set_page_config(
-    page_title="Video Toolkit - Screenshots & Script Extractor",
+    page_title="Video Toolkit - Screenshots & Voice AI Script Extractor",
     page_icon="🎬",
     layout="wide"
 )
 
-# Custom CSS styling for top navbar and theme
+# Custom Styling
 st.markdown("""
 <style>
-    .top-nav {
-        background-color: #1E1E2E;
-        padding: 10px;
-        border-radius: 10px;
-        margin-bottom: 20px;
-        text-align: center;
-    }
     .main-title {
         font-size: 2.3rem;
         font-weight: 700;
@@ -82,22 +77,16 @@ def format_timestamp(seconds):
     return f"{secs:02d}s_{millis:03d}ms" if millis > 0 else f"{secs:02d}s"
 
 def parse_vtt_subtitles(vtt_text):
-    """
-    VTT file contents ko clean timestamped script me parse karta hai
-    """
     lines = vtt_text.splitlines()
     entries = []
     time_pattern = re.compile(r'(\d{2}:)?\d{2}:\d{2}[\.,]\d{3}\s*-->\s*(\d{2}:)?\d{2}:\d{2}[\.,]\d{3}')
-    
     current_time = None
     current_text = []
     seen_lines = set()
-    
     for line in lines:
         line = line.strip()
-        if not line or line.startswith('WEBVTT') or line.startswith('NOTE') or line.isdigit():
+        if not line or line.startswith('WEBVTT') or line.startswith('NOTE') or line.startswith('Kind:') or line.startswith('Language:') or line.isdigit():
             continue
-            
         match = time_pattern.search(line)
         if match:
             if current_time and current_text:
@@ -107,7 +96,6 @@ def parse_vtt_subtitles(vtt_text):
                     entries.append((current_time, full_line))
                     seen_lines.add(full_line)
                 current_text = []
-            
             parts = line.split('-->')
             start_t = parts[0].strip().split('.')[0]
             end_t = parts[1].strip().split('.')[0]
@@ -116,54 +104,161 @@ def parse_vtt_subtitles(vtt_text):
             clean_line = re.sub(r'<[^>]+>', '', line).strip()
             if clean_line and clean_line not in current_text:
                 current_text.append(clean_line)
-                
     if current_time and current_text:
         full_line = " ".join(current_text).strip()
         full_line = re.sub(r'<[^>]+>', '', full_line)
         if full_line and full_line not in seen_lines:
             entries.append((current_time, full_line))
-            
     return entries
 
-def fetch_video_transcript(video_url):
-    temp_dir = tempfile.mkdtemp()
+def parse_json3_captions(json_data):
+    events = json_data.get('events', [])
+    entries = []
+    seen = set()
+    for ev in events:
+        start_ms = ev.get('tStartMs', 0)
+        d_ms = ev.get('dDurationMs', 0)
+        segs = ev.get('segs', [])
+        if not segs:
+            continue
+        text = "".join([s.get('utf8', '') for s in segs]).strip()
+        text = re.sub(r'\n+', ' ', text)
+        if not text or text in seen:
+            continue
+        start_sec = start_ms / 1000.0
+        end_sec = (start_ms + d_ms) / 1000.0
+        time_str = f"[{format_timestamp(start_sec)} - {format_timestamp(end_sec)}]"
+        entries.append((time_str, text))
+        seen.add(text)
+    return entries
+
+def get_video_caption_info(video_url):
     ydl_opts = {
         'skip_download': True,
         'writeautosub': True,
         'writesubtitles': True,
-        'subtitlesformat': 'vtt',
-        'outtmpl': os.path.join(temp_dir, 'sub'),
+        'subtitleslangs': ['all'],
         'quiet': True,
         'no_warnings': True,
     }
     with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-        info = ydl.extract_info(video_url, download=True)
+        info = ydl.extract_info(video_url, download=False)
         raw_title = info.get('title', 'video')
-        detected_lang = info.get('language', None)
+        subtitles = info.get('subtitles', {})
+        auto_captions = info.get('automatic_captions', {})
         
-        # Check downloaded vtt files
-        vtt_files = glob.glob(os.path.join(temp_dir, "*.vtt"))
-        if not vtt_files:
-            return raw_title, detected_lang or "Unknown", []
-            
-        # Try to infer language from filename e.g. sub.hi.vtt
-        first_vtt = vtt_files[0]
-        filename_parts = os.path.basename(first_vtt).split('.')
-        if len(filename_parts) > 2:
-            detected_lang = filename_parts[1]
-            
-        with open(first_vtt, 'r', encoding='utf-8', errors='ignore') as f:
-            vtt_content = f.read()
-            
-        entries = parse_vtt_subtitles(vtt_content)
-        return raw_title, detected_lang or "Auto-Detected", entries
+        all_langs = {}
+        if subtitles:
+            for lang, formats in subtitles.items():
+                all_langs[lang] = {'type': 'Manual Subtitle', 'formats': formats}
+        if auto_captions:
+            for lang, formats in auto_captions.items():
+                if lang not in all_langs:
+                    all_langs[lang] = {'type': 'Auto-Generated', 'formats': formats}
+                    
+        return raw_title, all_langs
 
-# TOP NAVIGATION BAR (App Selector)
+def extract_captions_for_lang(all_langs, selected_lang):
+    if selected_lang not in all_langs:
+        return []
+    formats_list = all_langs[selected_lang]['formats']
+    vtt_url = None
+    json_url = None
+    for fmt in formats_list:
+        if fmt.get('ext') == 'vtt':
+            vtt_url = fmt.get('url')
+            break
+        elif fmt.get('ext') == 'json3':
+            json_url = fmt.get('url')
+
+    entries = []
+    try:
+        if vtt_url:
+            req = urllib.request.Request(vtt_url, headers={'User-Agent': 'Mozilla/5.0'})
+            with urllib.request.urlopen(req) as resp:
+                vtt_content = resp.read().decode('utf-8', errors='ignore')
+                entries = parse_vtt_subtitles(vtt_content)
+        elif json_url:
+            req = urllib.request.Request(json_url, headers={'User-Agent': 'Mozilla/5.0'})
+            with urllib.request.urlopen(req) as resp:
+                json_data = json.loads(resp.read().decode('utf-8', errors='ignore'))
+                entries = parse_json3_captions(json_data)
+    except Exception as e:
+        st.error(f"Error fetching caption content: {str(e)}")
+    return entries
+
+# AI Speech-to-Text Transcriber Model Loader
+@st.cache_resource
+def get_whisper_model():
+    try:
+        from faster_whisper import WhisperModel
+        # Load lightweight CPU model
+        return WhisperModel("tiny", device="cpu", compute_type="int8")
+    except Exception as e:
+        return None
+
+def process_reel_audio_and_transcribe(video_input_source, is_url=True):
+    temp_dir = tempfile.mkdtemp()
+    target_media_path = None
+    raw_title = "instagram_reel"
+
+    if is_url:
+        ydl_opts = {
+            'format': 'best',
+            'outtmpl': os.path.join(temp_dir, 'reel_media.%(ext)s'),
+            'quiet': True,
+            'no_warnings': True,
+        }
+        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+            info = ydl.extract_info(video_input_source, download=True)
+            raw_title = info.get('title', 'instagram_reel')
+        
+        media_files = glob.glob(os.path.join(temp_dir, "reel_media.*"))
+        if media_files:
+            target_media_path = media_files[0]
+    else:
+        # Uploaded file
+        target_media_path = os.path.join(temp_dir, video_input_source.name)
+        with open(target_media_path, "wb") as f:
+            f.write(video_input_source.getbuffer())
+        raw_title = os.path.splitext(video_input_source.name)[0]
+
+    if not target_media_path or not os.path.exists(target_media_path):
+        return raw_title, None, "Unknown", []
+
+    # Read audio bytes for player/download
+    with open(target_media_path, "rb") as f:
+        audio_bytes = f.read()
+
+    # Transcribe via Whisper AI
+    model = get_whisper_model()
+    if model is None:
+        return raw_title, audio_bytes, "Error", [("[00:00 - 00:00]", "Whisper AI model loading failed. Please install faster-whisper.")]
+
+    segments, info = model.transcribe(target_media_path, beam_size=5)
+    detected_lang = info.language.upper() if info and info.language else "AUTO"
+    
+    entries = []
+    for segment in segments:
+        start_str = format_timestamp(segment.start)
+        end_str = format_timestamp(segment.end)
+        time_str = f"[{start_str} - {end_str}]"
+        text = segment.text.strip()
+        if text:
+            entries.append((time_str, text))
+
+    return raw_title, audio_bytes, detected_lang, entries
+
+# TOP NAVIGATION BAR
 st.markdown('<div class="main-title">🎬 Video Toolkit Hub</div>', unsafe_allow_html=True)
 
 nav_choice = st.radio(
     "Navigation Menu",
-    ["📸 Video Screenshot Extractor", "📜 Video Script / Subtitles Extractor"],
+    [
+        "📸 Video Screenshot Extractor", 
+        "📜 YouTube Subtitles Extractor", 
+        "🎙️ Instagram Reel & Voice AI Script Extractor"
+    ],
     horizontal=True,
     label_visibility="collapsed"
 )
@@ -177,7 +272,6 @@ if nav_choice == "📸 Video Screenshot Extractor":
     st.subheader("📸 Video Screenshot Extractor")
     st.markdown("Fixed Time Interval (e.g. 1 sec) ya Auto Scene Change Detection se Screenshots lein.")
 
-    # Sidebar settings
     st.sidebar.header("⚙️ Screenshot Settings")
     extraction_mode = st.sidebar.radio(
         "Select Mode",
@@ -387,71 +481,183 @@ if nav_choice == "📸 Video Screenshot Extractor":
                         )
 
 # ==============================================================================
-# APP 2: VIDEO SCRIPT / TRANSCRIPT EXTRACTOR (WITH TIMESTAMPS & AUTO LANG)
+# APP 2: YOUTUBE SUBTITLES EXTRACTOR
 # ==============================================================================
-else:
-    st.subheader("📜 Video Script & Subtitles Extractor")
-    st.markdown("Video ka URL paste karein — Auto Language Detect karke Timestamped Script nikaley!")
+elif nav_choice == "📜 YouTube Subtitles Extractor":
+    st.subheader("📜 YouTube Subtitles & Script Extractor")
+    st.markdown("YouTube Video URL daalein — Manual & Auto-Generated Subtitles me se Timestamped Script nikaley!")
 
-    script_url = st.text_input("Online Video Link (YouTube, Vimeo, etc.) Paste Karein", key="script_url_input")
+    script_url = st.text_input("YouTube Video Link Paste Karein", key="yt_sub_input")
     
     if script_url:
-        if st.button("🚀 Extract Video Script & Subtitles", key="extract_script_btn"):
-            with st.spinner("Subtitles & Script extract ho rahe hain... Please wait..."):
+        if st.button("🔎 Search Video Subtitles", key="search_yt_sub_btn"):
+            with st.spinner("Subtitles search ho rahe hain..."):
                 try:
-                    title, lang, entries = fetch_video_transcript(script_url)
-                    st.session_state['script_data'] = {
+                    title, all_langs = get_video_caption_info(script_url)
+                    st.session_state['yt_caption_res'] = {
                         'title': title,
                         'slug': slugify(title),
-                        'lang': lang,
-                        'entries': entries
+                        'langs': all_langs
                     }
                 except Exception as e:
-                    st.error(f"❌ Subtitles extract karne me error: {str(e)}")
+                    st.error(f"❌ Error fetching captions: {str(e)}")
 
-    if 'script_data' in st.session_state:
-        data = st.session_state['script_data']
-        title = data['title']
-        slug = data['slug']
-        lang = data['lang']
-        entries = data['entries']
+    if 'yt_caption_res' in st.session_state:
+        res = st.session_state['yt_caption_res']
+        title = res['title']
+        slug = res['slug']
+        all_langs = res['langs']
 
         st.markdown("---")
         st.subheader(f"🎬 Video: {title}")
-        st.info(f"🌐 Auto Detected Language: **{lang.upper()}** | 🏷️ File Slug: `{slug}`")
 
-        if not entries:
-            st.warning("⚠️ Is video me koi subtitles/captions nahi mile. (Ensure video has captions on YouTube).")
+        if not all_langs:
+            st.warning("⚠️ Is video me koi subtitles nahi mile.")
         else:
-            st.success(f"✅ Kul {len(entries)} Transcript Lines Extract Ho Gayi!")
+            lang_options = list(all_langs.keys())
+            default_index = 0
+            for idx, l in enumerate(lang_options):
+                if l in ['hi', 'hi-orig', 'en', 'en-orig']:
+                    default_index = idx
+                    break
+                    
+            selected_lang = st.selectbox(
+                "🌐 Select Subtitle Language:",
+                options=lang_options,
+                index=default_index,
+                format_func=lambda l: f"{l.upper()} ({all_langs[l]['type']})"
+            )
             
-            # Format text output with timestamps
+            if st.button("⚡ Extract Script for Selected Language"):
+                with st.spinner("Extracting transcript lines..."):
+                    entries = extract_captions_for_lang(all_langs, selected_lang)
+                    st.session_state['yt_entries'] = entries
+                    st.session_state['yt_cur_lang'] = selected_lang
+
+        if 'yt_entries' in st.session_state and st.session_state['yt_entries']:
+            entries = st.session_state['yt_entries']
+            cur_lang = st.session_state.get('yt_cur_lang', 'lang')
+            
+            st.success(f"✅ Total {len(entries)} Timestamped Script Lines Extracted!")
             formatted_text_lines = [f"{time_str} {text}" for time_str, text in entries]
             full_transcript_str = "\n".join(formatted_text_lines)
+            plain_text = "\n".join([text for _, text in entries])
             
-            # Action Buttons: Download TXT
             col1, col2 = st.columns(2)
             with col1:
                 st.download_button(
                     label=f"📄 Download Script (.TXT with Timestamps)",
                     data=full_transcript_str,
-                    file_name=f"{slug}_script_{lang}.txt",
+                    file_name=f"{slug}_script_{cur_lang}.txt",
                     mime="text/plain"
                 )
             with col2:
-                plain_text = "\n".join([text for _, text in entries])
                 st.download_button(
                     label=f"📝 Download Plain Text (Without Timestamps)",
                     data=plain_text,
-                    file_name=f"{slug}_transcript_plain_{lang}.txt",
+                    file_name=f"{slug}_transcript_plain_{cur_lang}.txt",
                     mime="text/plain"
                 )
 
             st.markdown("---")
             st.subheader("📜 Timestamped Script Preview")
-            
-            # Display inside scrollable box
             script_html = "<br>".join([f"<b>{t}</b> {x}" for t, x in entries])
             st.markdown(f'<div class="transcript-box">{script_html}</div>', unsafe_allow_html=True)
-            
             st.text_area("📋 Copy Full Script Below:", value=full_transcript_str, height=250)
+
+# ==============================================================================
+# APP 3: INSTAGRAM REEL & VOICE AI SCRIPT EXTRACTOR (AUDIO EXTRACT + WHISPER AI)
+# ==============================================================================
+else:
+    st.subheader("🎙️ Instagram Reel & Voice AI Script Extractor")
+    st.markdown("Instagram Reels, Shorts, ya audio/video files ki **Voice Extract Karein (MP3)** aur **AI se Timestamped Script Transcribe** karein!")
+
+    tab_reel1, tab_reel2 = st.tabs(["🔗 Instagram Reel / Video Link", "📁 Upload Video / Audio File"])
+
+    reel_input_source = None
+    is_url_mode = True
+
+    with tab_reel1:
+        reel_url = st.text_input("Instagram Reel Link / Video URL Paste Karein", key="reel_url_input")
+        if reel_url:
+            reel_input_source = reel_url
+            is_url_mode = True
+
+    with tab_reel2:
+        uploaded_reel_file = st.file_uploader("Reel Video ya Audio File Upload Karein", type=["mp4", "mov", "mp3", "m4a", "wav"], key="reel_file_input")
+        if uploaded_reel_file:
+            reel_input_source = uploaded_reel_file
+            is_url_mode = False
+
+    if reel_input_source:
+        st.markdown("---")
+        if st.button("🚀 Extract Voice Audio & Generate AI Script", key="process_reel_btn"):
+            with st.spinner("1️⃣ Audio extract ho raha hai & 2️⃣ AI Voice-to-Text Script generate ho rahi hai..."):
+                try:
+                    title, audio_data, lang, entries = process_reel_audio_and_transcribe(reel_input_source, is_url=is_url_mode)
+                    st.session_state['reel_res'] = {
+                        'title': title,
+                        'slug': slugify(title),
+                        'audio_data': audio_data,
+                        'lang': lang,
+                        'entries': entries
+                    }
+                except Exception as e:
+                    st.error(f"❌ Error processing reel audio: {str(e)}")
+
+    if 'reel_res' in st.session_state:
+        r_data = st.session_state['reel_res']
+        title = r_data['title']
+        slug = r_data['slug']
+        audio_bytes = r_data['audio_data']
+        lang = r_data['lang']
+        entries = r_data['entries']
+
+        st.markdown("---")
+        st.subheader(f"🎬 Media: {title}")
+        st.info(f"🌐 AI Detected Audio Language: **{lang}** | 🏷️ File Slug: `{slug}`")
+
+        # 1. EXTRACTED VOICE AUDIO PLAYER & DOWNLOAD
+        if audio_bytes:
+            st.subheader("🎵 Extracted Voice Audio (MP3)")
+            st.audio(audio_bytes, format="audio/mp3")
+            st.download_button(
+                label=f"⬇️ Download Extracted Voice Audio (.MP3)",
+                data=audio_bytes,
+                file_name=f"{slug}_voice_audio.mp3",
+                mime="audio/mp3"
+            )
+
+        # 2. AI TIMESTAMPED SCRIPT EXTRACTOR
+        st.markdown("---")
+        st.subheader("📜 AI Generated Timestamped Script")
+        
+        if not entries:
+            st.warning("⚠️ Voice audio me koi clear speech detect nahi hui.")
+        else:
+            st.success(f"✅ AI Total {len(entries)} Voice Lines Transcribe Ki!")
+            formatted_text_lines = [f"{time_str} {text}" for time_str, text in entries]
+            full_transcript_str = "\n".join(formatted_text_lines)
+            plain_text = "\n".join([text for _, text in entries])
+
+            col1, col2 = st.columns(2)
+            with col1:
+                st.download_button(
+                    label=f"📄 Download AI Script (.TXT with Timestamps)",
+                    data=full_transcript_str,
+                    file_name=f"{slug}_ai_script_{lang.lower()}.txt",
+                    mime="text/plain"
+                )
+            with col2:
+                st.download_button(
+                    label=f"📝 Download Plain Text (Without Timestamps)",
+                    data=plain_text,
+                    file_name=f"{slug}_ai_transcript_plain_{lang.lower()}.txt",
+                    mime="text/plain"
+                )
+
+            st.markdown("---")
+            st.subheader("📜 Timestamped AI Script Preview")
+            script_html = "<br>".join([f"<b>{t}</b> {x}" for t, x in entries])
+            st.markdown(f'<div class="transcript-box">{script_html}</div>', unsafe_allow_html=True)
+            st.text_area("📋 Copy Full AI Script Below:", value=full_transcript_str, height=250)
