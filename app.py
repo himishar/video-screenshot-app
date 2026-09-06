@@ -204,7 +204,7 @@ def process_reel_audio_and_transcribe(video_input_source, is_url=True):
 
     if is_url:
         ydl_opts = {
-            'format': 'best',
+            'format': 'bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best',
             'outtmpl': os.path.join(temp_dir, 'reel_media.%(ext)s'),
             'quiet': True,
             'no_warnings': True,
@@ -224,16 +224,18 @@ def process_reel_audio_and_transcribe(video_input_source, is_url=True):
         raw_title = os.path.splitext(video_input_source.name)[0]
 
     if not target_media_path or not os.path.exists(target_media_path):
-        return raw_title, None, "Unknown", []
+        return raw_title, None, ".mp4", None, "Unknown", []
 
-    # Read audio bytes for player/download
+    # Read media bytes for video player/download
     with open(target_media_path, "rb") as f:
-        audio_bytes = f.read()
+        media_bytes = f.read()
+
+    media_ext = os.path.splitext(target_media_path)[1].lower() or ".mp4"
 
     # Transcribe via Whisper AI
     model = get_whisper_model()
     if model is None:
-        return raw_title, audio_bytes, "Error", [("[00:00 - 00:00]", "Whisper AI model loading failed. Please install faster-whisper.")]
+        return raw_title, media_bytes, media_ext, media_bytes, "Error", [("[00:00 - 00:00]", "Whisper AI model loading failed. Please install faster-whisper.")]
 
     segments, info = model.transcribe(target_media_path, beam_size=5)
     detected_lang = info.language.upper() if info and info.language else "AUTO"
@@ -247,7 +249,28 @@ def process_reel_audio_and_transcribe(video_input_source, is_url=True):
         if text:
             entries.append((time_str, text))
 
-    return raw_title, audio_bytes, detected_lang, entries
+    return raw_title, media_bytes, media_ext, media_bytes, detected_lang, entries
+
+def download_reel_video_only(video_url):
+    temp_dir = tempfile.mkdtemp()
+    ydl_opts = {
+        'format': 'bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best',
+        'outtmpl': os.path.join(temp_dir, 'reel_video.%(ext)s'),
+        'quiet': True,
+        'no_warnings': True,
+    }
+    with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+        info = ydl.extract_info(video_url, download=True)
+        raw_title = info.get('title', 'instagram_reel')
+    
+    media_files = glob.glob(os.path.join(temp_dir, "reel_video.*"))
+    if media_files:
+        filepath = media_files[0]
+        ext = os.path.splitext(filepath)[1].lower() or ".mp4"
+        with open(filepath, "rb") as f:
+            video_bytes = f.read()
+        return raw_title, video_bytes, ext
+    return raw_title, None, ".mp4"
 
 # TOP NAVIGATION BAR
 st.markdown('<div class="main-title">🎬 Video Toolkit Hub</div>', unsafe_allow_html=True)
@@ -257,7 +280,7 @@ nav_choice = st.radio(
     [
         "📸 Video Screenshot Extractor", 
         "📜 YouTube Subtitles Extractor", 
-        "🎙️ Instagram Reel & Voice AI Script Extractor"
+        "📥 Instagram Reel Downloader & Voice AI Script Extractor"
     ],
     horizontal=True,
     label_visibility="collapsed"
@@ -566,11 +589,11 @@ elif nav_choice == "📜 YouTube Subtitles Extractor":
             st.text_area("📋 Copy Full Script Below:", value=full_transcript_str, height=250)
 
 # ==============================================================================
-# APP 3: INSTAGRAM REEL & VOICE AI SCRIPT EXTRACTOR (AUDIO EXTRACT + WHISPER AI)
+# APP 3: INSTAGRAM REEL DOWNLOADER & VOICE AI SCRIPT EXTRACTOR
 # ==============================================================================
 else:
-    st.subheader("🎙️ Instagram Reel & Voice AI Script Extractor")
-    st.markdown("Instagram Reels, Shorts, ya audio/video files ki **Voice Extract Karein (MP3)** aur **AI se Timestamped Script Transcribe** karein!")
+    st.subheader("📥 Instagram Reel Downloader & Voice AI Script Extractor")
+    st.markdown("Instagram Reels & Shorts ka **HD Video Download** karein, **Voice Audio (MP3) Extract** karein aur **AI se Script Transcribe** karein!")
 
     tab_reel1, tab_reel2 = st.tabs(["🔗 Instagram Reel / Video Link", "📁 Upload Video / Audio File"])
 
@@ -591,24 +614,65 @@ else:
 
     if reel_input_source:
         st.markdown("---")
-        if st.button("🚀 Extract Voice Audio & Generate AI Script", key="process_reel_btn"):
-            with st.spinner("1️⃣ Audio extract ho raha hai & 2️⃣ AI Voice-to-Text Script generate ho rahi hai..."):
-                try:
-                    title, audio_data, lang, entries = process_reel_audio_and_transcribe(reel_input_source, is_url=is_url_mode)
-                    st.session_state['reel_res'] = {
-                        'title': title,
-                        'slug': slugify(title),
-                        'audio_data': audio_data,
-                        'lang': lang,
-                        'entries': entries
-                    }
-                except Exception as e:
-                    st.error(f"❌ Error processing reel audio: {str(e)}")
+        btn_col1, btn_col2 = st.columns(2)
+        
+        with btn_col1:
+            if is_url_mode and st.button("📥 Download Reel Video Only (Fast MP4)", key="dl_reel_only_btn"):
+                with st.spinner("Downloading Instagram Reel Video in HD..."):
+                    try:
+                        raw_title, v_bytes, ext = download_reel_video_only(reel_input_source)
+                        st.session_state['reel_video_only'] = {
+                            'title': raw_title,
+                            'slug': slugify(raw_title),
+                            'video_bytes': v_bytes,
+                            'ext': ext
+                        }
+                    except Exception as e:
+                        st.error(f"❌ Error downloading reel video: {str(e)}")
 
+        with btn_col2:
+            if st.button("🚀 Download Video + Voice MP3 + Generate AI Script", key="process_reel_btn"):
+                with st.spinner("1️⃣ Video & Audio download ho raha hai & 2️⃣ AI Voice-to-Text Script generate ho rahi hai..."):
+                    try:
+                        title, media_bytes, media_ext, audio_data, lang, entries = process_reel_audio_and_transcribe(reel_input_source, is_url=is_url_mode)
+                        st.session_state['reel_res'] = {
+                            'title': title,
+                            'slug': slugify(title),
+                            'media_bytes': media_bytes,
+                            'media_ext': media_ext,
+                            'audio_data': audio_data,
+                            'lang': lang,
+                            'entries': entries
+                        }
+                    except Exception as e:
+                        st.error(f"❌ Error processing reel audio: {str(e)}")
+
+    # Fast Reel Video Download Results
+    if 'reel_video_only' in st.session_state:
+        vo_data = st.session_state['reel_video_only']
+        vo_title = vo_data['title']
+        vo_slug = vo_data['slug']
+        vo_bytes = vo_data['video_bytes']
+        vo_ext = vo_data['ext']
+
+        st.markdown("---")
+        st.subheader(f"🎬 Reel Downloaded: {vo_title}")
+        if vo_bytes:
+            st.video(vo_bytes)
+            st.download_button(
+                label=f"⬇️ Download Reel Video ({vo_ext.upper()})",
+                data=vo_bytes,
+                file_name=f"{vo_slug}_video{vo_ext}",
+                mime="video/mp4" if vo_ext == ".mp4" else "video/quicktime"
+            )
+
+    # Full Processing (Video + Audio + AI Script) Results
     if 'reel_res' in st.session_state:
         r_data = st.session_state['reel_res']
         title = r_data['title']
         slug = r_data['slug']
+        media_bytes = r_data.get('media_bytes')
+        media_ext = r_data.get('media_ext', '.mp4')
         audio_bytes = r_data['audio_data']
         lang = r_data['lang']
         entries = r_data['entries']
@@ -617,18 +681,29 @@ else:
         st.subheader(f"🎬 Media: {title}")
         st.info(f"🌐 AI Detected Audio Language: **{lang}** | 🏷️ File Slug: `{slug}`")
 
-        # 1. EXTRACTED VOICE AUDIO PLAYER & DOWNLOAD
+        # 1. INSTAGRAM REEL VIDEO PLAYER & DOWNLOAD BUTTON
+        if media_bytes and media_ext in ['.mp4', '.mov', '.webm', '.avi']:
+            st.subheader("📽️ Extracted Reel Video (HD MP4)")
+            st.video(media_bytes)
+            st.download_button(
+                label=f"⬇️ Download Full Reel Video ({media_ext.upper()})",
+                data=media_bytes,
+                file_name=f"{slug}_video{media_ext}",
+                mime="video/mp4" if media_ext == ".mp4" else "video/quicktime"
+            )
+
+        # 2. EXTRACTED VOICE AUDIO PLAYER & DOWNLOAD
         if audio_bytes:
             st.subheader("🎵 Extracted Voice Audio (MP3)")
             st.audio(audio_bytes, format="audio/mp3")
             st.download_button(
-                label=f"⬇️ Download Extracted Voice Audio (.MP3)",
+                label=f"⬇️ Download Voice Audio (.MP3)",
                 data=audio_bytes,
                 file_name=f"{slug}_voice_audio.mp3",
                 mime="audio/mp3"
             )
 
-        # 2. AI TIMESTAMPED SCRIPT EXTRACTOR
+        # 3. AI TIMESTAMPED SCRIPT EXTRACTOR
         st.markdown("---")
         st.subheader("📜 AI Generated Timestamped Script")
         
