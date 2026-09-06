@@ -13,47 +13,106 @@ import yt_dlp
 
 # Page Config
 st.set_page_config(
-    page_title="Video Toolkit - Screenshots & Voice AI Script Extractor",
+    page_title="Video Toolkit Hub",
     page_icon="🎬",
-    layout="wide"
+    layout="centered"
 )
 
-# Custom Styling
+# Custom Styling (Modern Premium UI)
 st.markdown("""
 <style>
+    @import url('https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;600;700;800&display=swap');
+
+    html, body, [class*="css"] {
+        font-family: 'Plus Jakarta Sans', sans-serif;
+    }
+
     .main-title {
-        font-size: 2.3rem;
-        font-weight: 700;
-        color: #FF4B4B;
+        font-size: 2.2rem;
+        font-weight: 800;
+        background: linear-gradient(135deg, #FF4B4B 0%, #FF6B6B 50%, #E63946 100%);
+        -webkit-background-clip: text;
+        -webkit-text-fill-color: transparent;
         text-align: center;
-        margin-bottom: 0.3rem;
+        margin-bottom: 0.2rem;
+        letter-spacing: -0.5px;
     }
+
     .sub-title {
-        font-size: 1.05rem;
+        font-size: 0.95rem;
         text-align: center;
-        color: #555555;
-        margin-bottom: 1.5rem;
+        color: #64748B;
+        margin-bottom: 1.2rem;
     }
+
+    /* Video Player Compact Container */
+    .stVideo {
+        display: flex !important;
+        justify-content: center !important;
+    }
+    
+    .stVideo video {
+        max-width: 280px !important;
+        max-height: 480px !important;
+        border-radius: 16px !important;
+        box-shadow: 0 10px 30px -5px rgba(0, 0, 0, 0.2) !important;
+        border: 2px solid #F1F5F9 !important;
+        margin: 0 auto !important;
+    }
+
     .stButton>button {
         width: 100%;
-        background-color: #FF4B4B;
+        background: linear-gradient(135deg, #FF4B4B 0%, #E63946 100%);
         color: white;
-        font-weight: bold;
-        border-radius: 8px;
-        padding: 0.6rem;
+        font-weight: 600;
+        border: none;
+        border-radius: 10px;
+        padding: 0.6rem 1rem;
+        transition: all 0.2s ease-in-out;
+        box-shadow: 0 4px 12px rgba(255, 75, 75, 0.25);
     }
+
     .stButton>button:hover {
-        background-color: #FF2B2B;
+        transform: translateY(-1px);
+        box-shadow: 0 6px 18px rgba(255, 75, 75, 0.35);
+        background: linear-gradient(135deg, #FF3333 0%, #D62839 100%);
         color: white;
     }
+
+    .stDownloadButton>button {
+        width: 100%;
+        background-color: #10B981;
+        color: white;
+        font-weight: 600;
+        border-radius: 10px;
+        border: none;
+        padding: 0.5rem 1rem;
+        box-shadow: 0 4px 12px rgba(16, 185, 129, 0.2);
+    }
+    
+    .stDownloadButton>button:hover {
+        background-color: #059669;
+        color: white;
+    }
+
+    .card-box {
+        background: #FFFFFF;
+        padding: 1.2rem;
+        border-radius: 14px;
+        border: 1px solid #E2E8F0;
+        box-shadow: 0 4px 15px rgba(0, 0, 0, 0.03);
+        margin-bottom: 1rem;
+    }
+
     .transcript-box {
-        background-color: #F8F9FA;
-        padding: 15px;
-        border-radius: 8px;
-        border: 1px solid #E9ECEF;
-        max-height: 450px;
+        background-color: #F8FAFC;
+        padding: 14px;
+        border-radius: 10px;
+        border: 1px solid #E2E8F0;
+        max-height: 350px;
         overflow-y: auto;
         font-family: monospace;
+        font-size: 0.88rem;
     }
 </style>
 """, unsafe_allow_html=True)
@@ -656,15 +715,32 @@ else:
         vo_ext = vo_data['ext']
 
         st.markdown("---")
-        st.subheader(f"🎬 Reel Downloaded: {vo_title}")
-        if vo_bytes:
-            st.video(vo_bytes)
-            st.download_button(
-                label=f"⬇️ Download Reel Video ({vo_ext.upper()})",
-                data=vo_bytes,
-                file_name=f"{vo_slug}_video{vo_ext}",
-                mime="video/mp4" if vo_ext == ".mp4" else "video/quicktime"
-            )
+        st.markdown(f"### 🎬 Reel Preview: **{vo_title}**")
+        
+        col_v1, col_v2 = st.columns([1, 1])
+        with col_v1:
+            st.markdown('<div class="card-box" style="text-align: center;">', unsafe_allow_html=True)
+            if vo_bytes:
+                st.video(vo_bytes)
+                st.markdown("<br>", unsafe_allow_html=True)
+                st.download_button(
+                    label=f"⬇️ Download Reel Video ({vo_ext.upper()})",
+                    data=vo_bytes,
+                    file_name=f"{vo_slug}_video{vo_ext}",
+                    mime="video/mp4" if vo_ext == ".mp4" else "video/quicktime"
+                )
+            st.markdown('</div>', unsafe_allow_html=True)
+
+        with col_v2:
+            st.markdown('<div class="card-box">', unsafe_allow_html=True)
+            st.success("✅ Reel Video Download Ready!")
+            st.info(f"🏷️ **File Name**: `{vo_slug}_video{vo_ext}`")
+            st.markdown("""
+            **⚡ Tips for Creators:**
+            - Short Clips & Reels are best edited in CapCut / VN Editor.
+            - Extract screenshots using Tab 1 for thumbnails!
+            """)
+            st.markdown('</div>', unsafe_allow_html=True)
 
     # Full Processing (Video + Audio + AI Script) Results
     if 'reel_res' in st.session_state:
@@ -678,32 +754,40 @@ else:
         entries = r_data['entries']
 
         st.markdown("---")
-        st.subheader(f"🎬 Media: {title}")
-        st.info(f"🌐 AI Detected Audio Language: **{lang}** | 🏷️ File Slug: `{slug}`")
+        st.markdown(f"### 🎬 Media Toolkit Result: **{title}**")
+        
+        res_col1, res_col2 = st.columns([1, 1.2])
 
-        # 1. INSTAGRAM REEL VIDEO PLAYER & DOWNLOAD BUTTON
-        if media_bytes and media_ext in ['.mp4', '.mov', '.webm', '.avi']:
-            st.subheader("📽️ Extracted Reel Video (HD MP4)")
-            st.video(media_bytes)
-            st.download_button(
-                label=f"⬇️ Download Full Reel Video ({media_ext.upper()})",
-                data=media_bytes,
-                file_name=f"{slug}_video{media_ext}",
-                mime="video/mp4" if media_ext == ".mp4" else "video/quicktime"
-            )
+        with res_col1:
+            st.markdown('<div class="card-box" style="text-align: center;">', unsafe_allow_html=True)
+            if media_bytes and media_ext in ['.mp4', '.mov', '.webm', '.avi']:
+                st.video(media_bytes)
+                st.markdown("<br>", unsafe_allow_html=True)
+                st.download_button(
+                    label=f"⬇️ Download HD Reel Video ({media_ext.upper()})",
+                    data=media_bytes,
+                    file_name=f"{slug}_video{media_ext}",
+                    mime="video/mp4" if media_ext == ".mp4" else "video/quicktime"
+                )
+            st.markdown('</div>', unsafe_allow_html=True)
 
-        # 2. EXTRACTED VOICE AUDIO PLAYER & DOWNLOAD
-        if audio_bytes:
-            st.subheader("🎵 Extracted Voice Audio (MP3)")
-            st.audio(audio_bytes, format="audio/mp3")
-            st.download_button(
-                label=f"⬇️ Download Voice Audio (.MP3)",
-                data=audio_bytes,
-                file_name=f"{slug}_voice_audio.mp3",
-                mime="audio/mp3"
-            )
+        with res_col2:
+            st.markdown('<div class="card-box">', unsafe_allow_html=True)
+            st.info(f"🌐 AI Detected Language: **{lang}** | 🏷️ Slug: `{slug}`")
 
-        # 3. AI TIMESTAMPED SCRIPT EXTRACTOR
+            # Voice Audio
+            if audio_bytes:
+                st.markdown("##### 🎵 Extracted Voice Audio (MP3)")
+                st.audio(audio_bytes, format="audio/mp3")
+                st.download_button(
+                    label=f"⬇️ Download Voice Audio (.MP3)",
+                    data=audio_bytes,
+                    file_name=f"{slug}_voice_audio.mp3",
+                    mime="audio/mp3"
+                )
+            st.markdown('</div>', unsafe_allow_html=True)
+
+        # AI Timestamped Script Section
         st.markdown("---")
         st.subheader("📜 AI Generated Timestamped Script")
         
@@ -715,15 +799,15 @@ else:
             full_transcript_str = "\n".join(formatted_text_lines)
             plain_text = "\n".join([text for _, text in entries])
 
-            col1, col2 = st.columns(2)
-            with col1:
+            c1, c2 = st.columns(2)
+            with c1:
                 st.download_button(
                     label=f"📄 Download AI Script (.TXT with Timestamps)",
                     data=full_transcript_str,
                     file_name=f"{slug}_ai_script_{lang.lower()}.txt",
                     mime="text/plain"
                 )
-            with col2:
+            with c2:
                 st.download_button(
                     label=f"📝 Download Plain Text (Without Timestamps)",
                     data=plain_text,
@@ -735,4 +819,4 @@ else:
             st.subheader("📜 Timestamped AI Script Preview")
             script_html = "<br>".join([f"<b>{t}</b> {x}" for t, x in entries])
             st.markdown(f'<div class="transcript-box">{script_html}</div>', unsafe_allow_html=True)
-            st.text_area("📋 Copy Full AI Script Below:", value=full_transcript_str, height=250)
+            st.text_area("📋 Copy Full AI Script Below:", value=full_transcript_str, height=200)
