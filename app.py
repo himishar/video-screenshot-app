@@ -304,6 +304,16 @@ def extract_mp3_audio_bytes(media_path):
     with open(media_path, "rb") as f:
         return f.read()
 
+YDL_COMMON_OPTS = {
+    'quiet': True,
+    'no_warnings': True,
+    'http_headers': {
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36',
+        'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+        'Accept-Language': 'en-US,en;q=0.9',
+    }
+}
+
 def process_reel_audio_and_transcribe(video_input_source, is_url=True):
     temp_dir = tempfile.mkdtemp()
     target_media_path = None
@@ -312,10 +322,9 @@ def process_reel_audio_and_transcribe(video_input_source, is_url=True):
     try:
         if is_url:
             ydl_opts = {
+                **YDL_COMMON_OPTS,
                 'format': 'bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best',
                 'outtmpl': os.path.join(temp_dir, 'reel_media.%(ext)s'),
-                'quiet': True,
-                'no_warnings': True,
             }
             with yt_dlp.YoutubeDL(ydl_opts) as ydl:
                 info = ydl.extract_info(video_input_source, download=True)
@@ -363,16 +372,14 @@ def process_reel_audio_and_transcribe(video_input_source, is_url=True):
 
         return raw_title, media_bytes, media_ext, audio_bytes, detected_lang, entries
     finally:
-        # Keep temp_dir clean if needed, or files will remain in /tmp
         pass
 
 def download_reel_video_only(video_url):
     temp_dir = tempfile.mkdtemp()
     ydl_opts = {
+        **YDL_COMMON_OPTS,
         'format': 'bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best',
         'outtmpl': os.path.join(temp_dir, 'reel_video.%(ext)s'),
-        'quiet': True,
-        'no_warnings': True,
     }
     with yt_dlp.YoutubeDL(ydl_opts) as ydl:
         info = ydl.extract_info(video_url, download=True)
@@ -752,11 +759,15 @@ else:
                             'ext': ext
                         }
                     except Exception as e:
-                        st.error(f"❌ Error downloading reel video: {str(e)}")
+                        err_msg = str(e)
+                        if "429" in err_msg or "Too Many Requests" in err_msg:
+                            st.warning("⚠️ **Instagram Cloud IP Rate Limit (429):** Instagram ne cloud server par temporary link protection lagaya hai.\n\n👉 **Solution:** Upar **'📁 Upload Video / Audio File'** tab use karke direct file upload karein — ye 100% fast aur bina kisi block ke chalega!")
+                        else:
+                            st.error(f"❌ Error downloading reel video: {err_msg}")
 
         with btn_col2:
             if st.button("🚀 Download Video + Voice MP3 + Generate AI Script", key="process_reel_btn"):
-                with st.spinner("1️⃣ Video & Audio download ho raha hai & 2️⃣ AI Voice-to-Text Script generate ho rahi hai..."):
+                with st.spinner("1️⃣ Video & Audio process ho raha hai & 2️⃣ AI Voice-to-Text Script generate ho rahi hai..."):
                     try:
                         title, media_bytes, media_ext, audio_data, lang, entries = process_reel_audio_and_transcribe(reel_input_source, is_url=is_url_mode)
                         st.session_state['reel_res'] = {
@@ -769,7 +780,11 @@ else:
                             'entries': entries
                         }
                     except Exception as e:
-                        st.error(f"❌ Error processing reel audio: {str(e)}")
+                        err_msg = str(e)
+                        if "429" in err_msg or "Too Many Requests" in err_msg:
+                            st.warning("⚠️ **Instagram Cloud IP Rate Limit (429):** Instagram ne cloud server par temporary link protection lagaya hai.\n\n👉 **Solution:** Upar **'📁 Upload Video / Audio File'** tab use karke direct file upload karein — ye 100% fast aur bina kisi block ke chalega!")
+                        else:
+                            st.error(f"❌ Error processing reel audio: {err_msg}")
 
     # Fast Reel Video Download Results
     if 'reel_video_only' in st.session_state:
