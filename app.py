@@ -279,13 +279,21 @@ def get_whisper_model():
     except Exception as e:
         return None
 
+def get_ffmpeg_path():
+    try:
+        import imageio_ffmpeg
+        return imageio_ffmpeg.get_ffmpeg_exe()
+    except Exception:
+        return None
+
 def extract_mp3_audio_bytes(media_path):
     """Extract real MP3 audio using ffmpeg subprocess if available."""
     import subprocess
     mp3_path = media_path + ".mp3"
+    ffmpeg_bin = get_ffmpeg_path() or "ffmpeg"
     try:
         subprocess.run(
-            ["ffmpeg", "-y", "-i", media_path, "-vn", "-acodec", "libmp3lame", "-q:a", "2", mp3_path],
+            [ffmpeg_bin, "-y", "-i", media_path, "-vn", "-acodec", "libmp3lame", "-q:a", "2", mp3_path],
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
             check=True
@@ -307,12 +315,17 @@ def extract_mp3_audio_bytes(media_path):
 YDL_COMMON_OPTS = {
     'quiet': True,
     'no_warnings': True,
+    'format': 'best[ext=mp4]/bestvideo[ext=mp4]+bestaudio[ext=m4a]/best',
     'http_headers': {
         'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36',
         'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
         'Accept-Language': 'en-US,en;q=0.9',
     }
 }
+
+_ffmpeg_exe = get_ffmpeg_path()
+if _ffmpeg_exe:
+    YDL_COMMON_OPTS['ffmpeg_location'] = _ffmpeg_exe
 
 def process_reel_audio_and_transcribe(video_input_source, is_url=True):
     temp_dir = tempfile.mkdtemp()
@@ -323,7 +336,6 @@ def process_reel_audio_and_transcribe(video_input_source, is_url=True):
         if is_url:
             ydl_opts = {
                 **YDL_COMMON_OPTS,
-                'format': 'bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best',
                 'outtmpl': os.path.join(temp_dir, 'reel_media.%(ext)s'),
             }
             with yt_dlp.YoutubeDL(ydl_opts) as ydl:
@@ -378,7 +390,6 @@ def download_reel_video_only(video_url):
     temp_dir = tempfile.mkdtemp()
     ydl_opts = {
         **YDL_COMMON_OPTS,
-        'format': 'bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best',
         'outtmpl': os.path.join(temp_dir, 'reel_video.%(ext)s'),
     }
     with yt_dlp.YoutubeDL(ydl_opts) as ydl:
