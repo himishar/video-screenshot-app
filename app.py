@@ -220,28 +220,41 @@ def get_video_caption_info(video_url):
 def extract_captions_for_lang(all_langs, selected_lang):
     if selected_lang not in all_langs:
         return []
-    formats_list = all_langs[selected_lang]['formats']
+    formats_list = all_langs[selected_lang].get('formats', [])
     vtt_url = None
     json_url = None
+    fallback_url = None
+    
     for fmt in formats_list:
-        if fmt.get('ext') == 'vtt':
-            vtt_url = fmt.get('url')
+        ext = fmt.get('ext', '').lower()
+        url = fmt.get('url', '')
+        if ext == 'vtt':
+            vtt_url = url
             break
-        elif fmt.get('ext') == 'json3':
-            json_url = fmt.get('url')
+        elif ext == 'json3':
+            json_url = url
+        elif not fallback_url and url:
+            fallback_url = url
 
     entries = []
     try:
         if vtt_url:
             req = urllib.request.Request(vtt_url, headers={'User-Agent': 'Mozilla/5.0'})
-            with urllib.request.urlopen(req) as resp:
+            with urllib.request.urlopen(req, timeout=10) as resp:
                 vtt_content = resp.read().decode('utf-8', errors='ignore')
                 entries = parse_vtt_subtitles(vtt_content)
         elif json_url:
             req = urllib.request.Request(json_url, headers={'User-Agent': 'Mozilla/5.0'})
-            with urllib.request.urlopen(req) as resp:
+            with urllib.request.urlopen(req, timeout=10) as resp:
                 json_data = json.loads(resp.read().decode('utf-8', errors='ignore'))
                 entries = parse_json3_captions(json_data)
+        elif fallback_url:
+            # Try fetching as VTT if fmt query can be attached, or direct read
+            fetch_url = fallback_url if '&fmt=' in fallback_url else f"{fallback_url}&fmt=vtt"
+            req = urllib.request.Request(fetch_url, headers={'User-Agent': 'Mozilla/5.0'})
+            with urllib.request.urlopen(req, timeout=10) as resp:
+                raw_content = resp.read().decode('utf-8', errors='ignore')
+                entries = parse_vtt_subtitles(raw_content)
     except Exception as e:
         st.error(f"Error fetching caption content: {str(e)}")
     return entries
@@ -256,59 +269,92 @@ def get_whisper_model():
     except Exception as e:
         return None
 
+def extract_mp3_audio_bytes(media_path):
+    """Extract real MP3 audio using ffmpeg subprocess if available."""
+    import subprocess
+    mp3_path = media_path + ".mp3"
+    try:
+        subprocess.run(
+            ["ffmpeg", "-y", "-i", media_path, "-vn", "-acodec", "libmp3lame", "-q:a", "2", mp3_path],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            check=True
+        )
+        if os.path.exists(mp3_path):
+            with open(mp3_path, "rb") as f:
+                audio_bytes = f.read()
+            try:
+                os.remove(mp3_path)
+            except Exception:
+                pass
+            return audio_bytes
+    except Exception:
+        pass
+    # Fallback to direct media bytes if ffmpeg is missing
+    with open(media_path, "rb") as f:
+        return f.read()
+
 def process_reel_audio_and_transcribe(video_input_source, is_url=True):
     temp_dir = tempfile.mkdtemp()
     target_media_path = None
     raw_title = "instagram_reel"
 
-    if is_url:
-        ydl_opts = {
-            'format': 'bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best',
-            'outtmpl': os.path.join(temp_dir, 'reel_media.%(ext)s'),
-            'quiet': True,
-            'no_warnings': True,
-        }
-        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-            info = ydl.extract_info(video_input_source, download=True)
-            raw_title = info.get('title', 'instagram_reel')
+    try:
+        if is_url:
+            ydl_opts = {
+                'format': 'bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best',
+                'outtmpl': os.path.join(temp_dir, 'reel_media.%(ext)s'),
+                'quiet': True,
+                'no_warnings': True,
+            }
+            with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+                info = ydl.extract_info(video_input_source, download=True)
+                raw_title = info.get('title', 'instagram_reel')
+            
+            media_files = glob.glob(os.path.join(temp_dir, "reel_media.*"))
+            if media_files:
+                target_media_path = media_files[0]
+        else:
+            # Uploaded file
+            safe_name = re.sub(r'[^a-zA-Z0-9_\-\.]', '_', video_input_source.name)
+            target_media_path = os.path.join(temp_dir, safe_name)
+            with open(target_media_path, "wb") as f:
+                f.write(video_input_source.getbuffer())
+            raw_title = os.path.splitext(video_input_source.name)[0]
+
+        if not target_media_path or not os.path.exists(target_media_path):
+            return raw_title, None, ".mp4", None, "Unknown", []
+
+        # Read media bytes for video player/download
+        with open(target_media_path, "rb") as f:
+            media_bytes = f.read()
+
+        media_ext = os.path.splitext(target_media_path)[1].lower() or ".mp4"
+
+        # Extract true MP3 audio bytes
+        audio_bytes = extract_mp3_audio_bytes(target_media_path)
+
+        # Transcribe via Whisper AI
+        model = get_whisper_model()
+        if model is None:
+            return raw_title, media_bytes, media_ext, audio_bytes, "Error", [("[00:00 - 00:00]", "Whisper AI model loading failed. Please check dependencies.")]
+
+        segments, info = model.transcribe(target_media_path, beam_size=5)
+        detected_lang = info.language.upper() if info and info.language else "AUTO"
         
-        media_files = glob.glob(os.path.join(temp_dir, "reel_media.*"))
-        if media_files:
-            target_media_path = media_files[0]
-    else:
-        # Uploaded file
-        target_media_path = os.path.join(temp_dir, video_input_source.name)
-        with open(target_media_path, "wb") as f:
-            f.write(video_input_source.getbuffer())
-        raw_title = os.path.splitext(video_input_source.name)[0]
+        entries = []
+        for segment in segments:
+            start_str = format_timestamp(segment.start)
+            end_str = format_timestamp(segment.end)
+            time_str = f"[{start_str} - {end_str}]"
+            text = segment.text.strip()
+            if text:
+                entries.append((time_str, text))
 
-    if not target_media_path or not os.path.exists(target_media_path):
-        return raw_title, None, ".mp4", None, "Unknown", []
-
-    # Read media bytes for video player/download
-    with open(target_media_path, "rb") as f:
-        media_bytes = f.read()
-
-    media_ext = os.path.splitext(target_media_path)[1].lower() or ".mp4"
-
-    # Transcribe via Whisper AI
-    model = get_whisper_model()
-    if model is None:
-        return raw_title, media_bytes, media_ext, media_bytes, "Error", [("[00:00 - 00:00]", "Whisper AI model loading failed. Please install faster-whisper.")]
-
-    segments, info = model.transcribe(target_media_path, beam_size=5)
-    detected_lang = info.language.upper() if info and info.language else "AUTO"
-    
-    entries = []
-    for segment in segments:
-        start_str = format_timestamp(segment.start)
-        end_str = format_timestamp(segment.end)
-        time_str = f"[{start_str} - {end_str}]"
-        text = segment.text.strip()
-        if text:
-            entries.append((time_str, text))
-
-    return raw_title, media_bytes, media_ext, media_bytes, detected_lang, entries
+        return raw_title, media_bytes, media_ext, audio_bytes, detected_lang, entries
+    finally:
+        # Keep temp_dir clean if needed, or files will remain in /tmp
+        pass
 
 def download_reel_video_only(video_url):
     temp_dir = tempfile.mkdtemp()
@@ -475,18 +521,27 @@ if nav_choice == "📸 Video Screenshot Extractor":
         online_url = st.text_input("Online Video Link Paste Karein")
         if online_url:
             if st.button("🔗 Load Video Link"):
-                with st.spinner("Loading video stream..."):
+                with st.spinner("Downloading video for screenshot extraction..."):
                     try:
-                        ydl_opts = {'format': 'best[ext=mp4]/best', 'quiet': True, 'no_warnings': True}
+                        temp_dir = tempfile.mkdtemp()
+                        ydl_opts = {
+                            'format': 'best[height<=720][ext=mp4]/best[ext=mp4]/best',
+                            'outtmpl': os.path.join(temp_dir, 'online_stream.%(ext)s'),
+                            'quiet': True,
+                            'no_warnings': True,
+                        }
                         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-                            info = ydl.extract_info(online_url, download=False)
-                            video_url = info.get('url', None)
+                            info = ydl.extract_info(online_url, download=True)
                             raw_title = info.get('title', 'online-video')
-                            if video_url:
-                                st.session_state['online_video_path'] = video_url
-                                st.session_state['video_title'] = slugify(raw_title)
-                                st.session_state['raw_title'] = raw_title
-                                st.success(f"✅ Loaded: **{raw_title}**")
+                        
+                        found_files = glob.glob(os.path.join(temp_dir, "online_stream.*"))
+                        if found_files:
+                            st.session_state['online_video_path'] = found_files[0]
+                            st.session_state['video_title'] = slugify(raw_title)
+                            st.session_state['raw_title'] = raw_title
+                            st.success(f"✅ Loaded: **{raw_title}**")
+                        else:
+                            st.error("❌ Video load nahi ho paayi.")
                     except Exception as e:
                         st.error(f"❌ Error: {str(e)}")
 
